@@ -13,6 +13,9 @@ columns = ["Name", "Age"]
 # df = spark.createDataFrame(data, columns)
 df = spark.read.csv("/home/adminabhi/gitrepo/marathon_dataset/marathon_dataset.csv", header=True, inferSchema=True)
 
+
+df.rdd.getNumPartitions()
+
 # Step 4: Show the DataFrame
 print("Original DataFrame:")
 df.show(5)
