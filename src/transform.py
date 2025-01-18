@@ -1,5 +1,7 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col,avg, count
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from pyspark.sql.types import IntegerType, FloatType
 import time
 # Step 1: Create a SparkSession
 spark = SparkSession.builder \
@@ -33,26 +35,33 @@ df = df.withColumnRenamed("summary", "summary") \
 
 #cast the columns to appropriate data types
 
-df = df.withColumn("athlete_avg_speed", col("athlete_avg_speed").cast("float")) \
-        .withColumn("event_num_finishers", col("event_num_finishers").cast("int")) 
+df = df.withColumn("athlete_avg_speed", F.col("athlete_avg_speed").cast("float")) \
+        .withColumn("event_num_finishers", F.col("event_num_finishers").cast("int")) 
 
-
+# 2. Calculate age at event
+df = df.withColumn("athlete_age_at_event", df["event_year"] - df["athlete_birth_year"])
 
 # df.rdd.getNumPartitions()
+# 3. Parse event distance
+df = df.withColumn("event_distance_km", F.regexp_extract(df["event_distance"], r"(\d+\.?\d*)", 1).cast(FloatType()))
 
+# 4. Window function for ranking athletes within each event
+window_spec = Window.partitionBy("event_name", "event_year").orderBy(F.desc("athlete_avg_speed"))
+df = df.withColumn("rank_in_event", F.rank().over(window_spec))
+
+df.show()
 # # Step 4: Show the DataFrame
 # print("Original DataFrame:")
 # df.describe().show()
 
 # # Step 5: Perform a transformation (filtering ages > 30)
 # # filtered_df = df.filter(df.Age > 30)
-agg_df = df.groupBy(col("event_year"), col("event_name")).agg(
-        avg(col("athlete_avg_speed")).alias("avg_speed"),
-        count(col("athlete_id")).alias("num_athletes")
-        )
+# agg_df = df.filter(F.col('athlete_country')=='GER')\
+#         .groupBy(F.col("event_year"),F.col('athlete_country'), F.col("event_name"), F.col("athlete_gender"))\
+#         .agg(F.avg(F.col("athlete_avg_speed")).alias("avg_speed"), F.count(F.col("athlete_id")).alias("num_athletes"))
 
 # print("Filtered DataFrame (Age > 30):")
-agg_df.show(5)
+# agg_df.show()
 
 end_time = time.time()
 print(f"Execution Time (before optimization): {end_time - start_time} seconds")
@@ -70,5 +79,5 @@ while True:
         exec(command)  # Be cautious using exec in production
     except Exception as e:
         print(f"Error: {e}")
-
+ 
 spark.stop()
