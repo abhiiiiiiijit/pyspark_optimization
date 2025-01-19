@@ -49,6 +49,12 @@ df = df.withColumn("event_distance_km", F.regexp_extract(df["event_distance"], r
 window_spec = Window.partitionBy("event_name", "event_year").orderBy(F.desc("athlete_avg_speed"))
 df = df.withColumn("rank_in_event", F.rank().over(window_spec))
 
+# 5. Calculate average speed for each age category and gender
+avg_speed_by_category = df.groupBy("athlete_age_category", "athlete_gender") \
+    .agg(F.avg("athlete_avg_speed").alias("avg_speed_category"))
+
+df = df.join(avg_speed_by_category, ["athlete_age_category", "athlete_gender"])
+
 df.show()
 # # Step 4: Show the DataFrame
 # print("Original DataFrame:")
