@@ -17,7 +17,7 @@ start_time = time.time()
 df = spark.read.csv("/home/adminabhi/gitrepo/marathon_dataset/marathon_dataset.csv", header=True, inferSchema=True)
 
 #rename the columns
-
+#df = df.repartition(200)
 # 2. Rename Columns with a Dictionary
 rename_columns = {
     "summary": "summary",
@@ -40,28 +40,32 @@ rename_columns = {
 df = df.withColumnsRenamed(rename_columns)
 
 #cast the columns to appropriate data types
+col_name_list = list(rename_columns.values())
+col_name_list = [e for e in col_name_list if e not in ['athlete_avg_speed','event_num_finishers']]
 
-df = df.withColumn("athlete_avg_speed", F.col("athlete_avg_speed").cast("float")) \
-        .withColumn("event_num_finishers", F.col("event_num_finishers").cast("int")) 
 
-# 2. Calculate age at event
-df = df.withColumn("athlete_age_at_event", df["event_year"] - df["athlete_birth_year"])
-
-# df.rdd.getNumPartitions()
-# 3. Parse event distance
-df = df.withColumn("event_distance_km", F.regexp_extract(df["event_distance"], r"(\d+\.?\d*)", 1).cast(FloatType()))
-
+df = df.select(
+    "*",
+    F.col("athlete_avg_speed").cast("float").alias("athlete_avg_speed_f"),
+    F.col("event_num_finishers").cast("int").alias("event_num_finishers_int"),
+    (F.col("event_year") - F.col("athlete_birth_year")).alias("athlete_age_at_event"),
+    F.regexp_extract(F.col("event_distance"), r"(\d+\.?\d*)", 1).cast(FloatType()).alias("event_distance_km")
+)
 # 4. Window function for ranking athletes within each event
-window_spec = Window.partitionBy("event_name", "event_year").orderBy(F.desc("athlete_avg_speed"))
+window_spec = Window.partitionBy("event_name", "event_year").orderBy(F.desc("athlete_avg_speed_f"))
 df = df.withColumn("rank_in_event", F.rank().over(window_spec))
+
+
+#df.persist()
+
 
 # 5. Calculate average speed for each age category and gender
 avg_speed_by_category = df.groupBy("athlete_age_category", "athlete_gender") \
-    .agg(F.avg("athlete_avg_speed").alias("avg_speed_category"))
+    .agg(F.avg("athlete_avg_speed_f").alias("avg_speed_category"))
 
-df = df.join(avg_speed_by_category, ["athlete_age_category", "athlete_gender"])
+df_f = df.join(avg_speed_by_category, ["athlete_age_category", "athlete_gender"])
 
-df.show()
+df_f.show()
 # # Step 4: Show the DataFrame
 # print("Original DataFrame:")
 # df.describe().show()
