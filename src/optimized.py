@@ -1,89 +1,86 @@
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
-from pyspark.sql.types import IntegerType, FloatType
+from pyspark.sql.types import IntegerType, FloatType, StructType, StructField, StringType
 import time
-# Step 1: Create a SparkSession
+
+# Define explicit schema to avoid schema inference
+schema = StructType([
+    StructField("summary", StringType()),
+    StructField("Year of event", IntegerType()),
+    StructField("Event dates", StringType()),
+    StructField("Event name", StringType()),
+    StructField("Event distance/length", StringType()),
+    StructField("Event number of finishers", IntegerType()),
+    StructField("Athlete performance", StringType()),
+    StructField("Athlete club", StringType()),
+    StructField("Athlete country", StringType()),
+    StructField("Athlete year of birth", IntegerType()),
+    StructField("Athlete gender", StringType()),
+    StructField("Athlete age category", StringType()),
+    StructField("Athlete average speed", FloatType()),
+    StructField("Athlete ID", StringType())
+])
+
+start_time = time.time()
+
+# Step 1: Optimized SparkSession configuration
 spark = SparkSession.builder \
     .appName("PySparkTest") \
+    .master("local[8]")\
+    .config("spark.sql.shuffle.partitions", "8") \
     .getOrCreate()
 
-# Step 2: Create a simple dataset
-# data = [("Alice", 28), ("Bob", 32), ("Cathy", 25)]
-# columns = ["Name", "Age"]
-start_time = time.time()
-# Step 3: Create a DataFrame
-# df = spark.createDataFrame(data, columns)
-df = spark.read.csv("/home/adminabhi/gitrepo/marathon_dataset/marathon_dataset.csv", header=True, inferSchema=True)
-
-#rename the columns
-#df = df.repartition(200)
-# 2. Rename Columns with a Dictionary
-rename_columns = {
-    "summary": "summary",
-    "Year of event": "event_year",
-    "Event dates": "event_dates",
-    "Event name": "event_name",
-    "Event distance/length": "event_distance",
-    "Event number of finishers": "event_num_finishers",
-    "Athlete performance": "athlete_performance",
-    "Athlete club": "athlete_club",
-    "Athlete country": "athlete_country",
-    "Athlete year of birth": "athlete_birth_year",
-    "Athlete gender": "athlete_gender",
-    "Athlete age category": "athlete_age_category",
-    "Athlete average speed": "athlete_avg_speed",
-    "Athlete ID": "athlete_id"
-}
-#df = df.select([F.col(k).alias(v) for k, v in rename_columns.items()])
-
-df = df.withColumnsRenamed(rename_columns)
-
-#cast the columns to appropriate data types
-col_name_list = list(rename_columns.values())
-col_name_list = [e for e in col_name_list if e not in ['athlete_avg_speed','event_num_finishers']]
-
-
-df = df.select(
-    "*",
-    F.col("athlete_avg_speed").cast("float").alias("athlete_avg_speed_f"),
-    F.col("event_num_finishers").cast("int").alias("event_num_finishers_int"),
-    (F.col("event_year") - F.col("athlete_birth_year")).alias("athlete_age_at_event"),
-    F.regexp_extract(F.col("event_distance"), r"(\d+\.?\d*)", 1).cast(FloatType()).alias("event_distance_km")
+# Step 2: Read data with explicit schema and select/rename in one operation
+df = spark.read.csv(
+    "/home/adminabhi/gitrepo/marathon_dataset/marathon_dataset.csv",
+    header=True,
+    schema=schema
+).select(
+    F.col("summary").alias("summary"),
+    F.col("Year of event").alias("event_year"),
+    F.col("Event dates").alias("event_dates"),
+    F.col("Event name").alias("event_name"),
+    F.col("Event distance/length").alias("event_distance"),
+    F.col("Event number of finishers").alias("event_num_finishers"),
+    F.col("Athlete performance").alias("athlete_performance"),
+    F.col("Athlete club").alias("athlete_club"),
+    F.col("Athlete country").alias("athlete_country"),
+    F.col("Athlete year of birth").alias("athlete_birth_year"),
+    F.col("Athlete gender").alias("athlete_gender"),
+    F.col("Athlete age category").alias("athlete_age_category"),
+    F.col("Athlete average speed").alias("athlete_avg_speed"),
+    F.col("Athlete ID").alias("athlete_id")
 )
-# 4. Window function for ranking athletes within each event
-window_spec = Window.partitionBy("event_name", "event_year").orderBy(F.desc("athlete_avg_speed_f"))
+
+# Step 3: Combine transformations
+df = df.withColumn("athlete_age_at_event", F.col("event_year") - F.col("athlete_birth_year")) \
+       .withColumn("event_distance_km", 
+                   F.regexp_extract(F.col("event_distance"), r"(\d+\.?\d*)", 1).cast(FloatType()))
+
+# Step 4: Optimize window function
+window_spec = Window.partitionBy("event_name", "event_year").orderBy(F.desc("athlete_avg_speed"))
 df = df.withColumn("rank_in_event", F.rank().over(window_spec))
 
+# Step 5: Optimize aggregation and join
+# Cache the base DF as it's used multiple times
+df.cache()
 
-#df.persist()
-
-
-# 5. Calculate average speed for each age category and gender
+# Calculate average speed with efficient aggregation
 avg_speed_by_category = df.groupBy("athlete_age_category", "athlete_gender") \
-    .agg(F.avg("athlete_avg_speed_f").alias("avg_speed_category"))
+    .agg(F.avg("athlete_avg_speed").alias("avg_speed_category"))
 
-df_f = df.join(avg_speed_by_category, ["athlete_age_category", "athlete_gender"])
+# Broadcast the small aggregated DF
+from pyspark.sql.functions import broadcast
+df = df.join(broadcast(avg_speed_by_category), ["athlete_age_category", "athlete_gender"])
 
-df_f.show()
-# # Step 4: Show the DataFrame
-# print("Original DataFrame:")
-# df.describe().show()
-
-# # Step 5: Perform a transformation (filtering ages > 30)
-# # filtered_df = df.filter(df.Age > 30)
-# agg_df = df.filter(F.col('athlete_country')=='GER')\
-#         .groupBy(F.col("event_year"),F.col('athlete_country'), F.col("event_name"), F.col("athlete_gender"))\
-#         .agg(F.avg(F.col("athlete_avg_speed")).alias("avg_speed"), F.count(F.col("athlete_id")).alias("num_athletes"))
-
-# print("Filtered DataFrame (Age > 30):")
-# agg_df.show()
+# Step 6: Efficient show with limit
+df.show(5, truncate=False)
 
 end_time = time.time()
-print(f"Execution Time (before optimization): {end_time - start_time} seconds")
-# Keep the SparkSession alive
-# input("Press Enter to terminate the SparkSession...")
-# spark.stop()
+print(f"Execution Time (after optimization): {end_time - start_time} seconds")
+
+
 
 # Interactive command submission
 print("Type 'exit' to terminate.")
@@ -95,5 +92,6 @@ while True:
         exec(command)  # Be cautious using exec in production
     except Exception as e:
         print(f"Error: {e}")
- 
+# Cleanup
+df.unpersist()
 spark.stop()
